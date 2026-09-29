@@ -1,0 +1,23 @@
+diff --git a/decider/probes/isolated.py b/decider/probes/isolated.py
+index 1d1bdd2..af4dd63 100644
+--- a/decider/probes/isolated.py
++++ b/decider/probes/isolated.py
+@@ -31,15 +31,16 @@ def is_scale(q): return len(q.options) >= 3 and all(re.match(r"^-?\d+:", o) for
+ 
+ def main():
+     ap = argparse.ArgumentParser(); ap.add_argument("model"); ap.add_argument("--n", type=int, default=300); ap.add_argument("--layout", default="state_first"); ap.add_argument("--out", default="")
++    ap.add_argument("--data", default="data/tasks_v4.pkl"); ap.add_argument("--probes", default="data/probes_v7.pkl")
+     a = ap.parse_args(); m = DecisionModel(a.model, grad_ckpt=False).cuda().eval()
+     from decider.prompt import chat_for_model
+     chat = chat_for_model(a.model, m.tok)
+-    _, evals = D.load_cache("data/tasks_v4.pkl"); sets = {}
++    _, evals = D.load_cache(a.data); sets = {}
+     for t, exs in evals.items():
+         qs = [(e.context, q) for e in exs[:a.n] for q in e.qs if is_scale(q) and q.gold >= 0]
+         if len(qs) >= 100: sets[t] = qs[:a.n * 2]
+     try:
+-        _, pr = D.load_cache("data/probes_v7.pkl"); sets["custom_score (teacher, held-out domains)"] = [(e.context, D.Q(e.qs[0].text, e.qs[0].options, e.qs[0].gold)) for e in pr["custom_score"][:a.n * 2]]
++        _, pr = D.load_cache(a.probes); sets["custom_score (teacher, held-out domains)"] = [(e.context, D.Q(e.qs[0].text, e.qs[0].options, e.qs[0].gold)) for e in pr["custom_score"][:a.n * 2]]
+     except Exception: pass
+     res = {}
+     for t, qs in sets.items():
