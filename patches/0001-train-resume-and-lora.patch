@@ -1,0 +1,240 @@
+diff --git a/decider/train.py b/decider/train.py
+index 2da7cc5..e355f59 100644
+--- a/decider/train.py
++++ b/decider/train.py
+@@ -1,5 +1,5 @@
+ """Stage 1: proper-scoring-rule fine-tune (CE, optionally + Brier) on the multi-task decision mixture."""
+-import argparse, json, math, os, pickle, random, time
++import argparse, json, math, os, pickle, random, shutil, time
+ import numpy as np, torch, torch.nn.functional as F
+ from decider.model import DecisionModel, collate
+ from decider.prompt import build
+@@ -51,6 +51,91 @@ def loss_fn(logits, golds, nopts, brier_w=0.0, label_smooth=0.0):
+     return loss, ce.detach()
+ 
+ 
++class LoRALinear(torch.nn.Module):
++    """base(x) + (alpha / r) * B A x, with the base frozen and A, B trained in fp32.  B starts at zero, so the wrapped model
++    starts out exactly equal to the base model."""
++    def __init__(self, base, r, alpha):
++        super().__init__()
++        self.base, self.scale = base, alpha / r
++        self.A = torch.nn.Parameter(torch.empty(r, base.in_features, dtype=torch.float32, device=base.weight.device))
++        self.B = torch.nn.Parameter(torch.zeros(base.out_features, r, dtype=torch.float32, device=base.weight.device))
++        torch.nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
++
++    def forward(self, x):
++        return self.base(x) + F.linear(F.linear(x, self.A.to(x.dtype)), self.B.to(x.dtype)) * self.scale
++
++    @torch.no_grad()
++    def merged(self):
++        w = self.base.weight
++        w.copy_((w.float() + (self.B @ self.A) * self.scale).to(w.dtype))
++        return self.base
++
++
++def _swap(lm, pick):
++    for mod in list(lm.modules()):
++        for name, child in list(mod.named_children()):
++            new = pick(child)
++            if new is not child:
++                setattr(mod, name, new)
++
++
++def add_lora(lm, r, alpha, targets):
++    """Freeze lm and wrap every nn.Linear whose attribute name is in `targets`.  Returns the number wrapped."""
++    for p in lm.parameters():
++        p.requires_grad_(False)
++    n = 0
++    for mod in list(lm.modules()):
++        for name, child in list(mod.named_children()):
++            if name in targets and type(child) is torch.nn.Linear:
++                setattr(mod, name, LoRALinear(child, r, alpha)); n += 1
++    lm.enable_input_require_grads()      # gradient checkpointing needs a grad-requiring input when the embeddings are frozen
++    return n
++
++
++def merge_lora(lm):
++    """Fold every adapter into its base weight and put the plain nn.Linear back (idempotent)."""
++    _swap(lm, lambda m: m.merged() if isinstance(m, LoRALinear) else m)
++
++
++def finish_lora(model, a, log):
++    """Before a final save: keep the adapter (small, fp32) next to the run, then merge it so OUT/model is a plain checkpoint."""
++    if not any(isinstance(m, LoRALinear) for m in model.modules()):
++        return
++    torch.save({k: v for k, v in model.state_dict().items() if k.endswith((".A", ".B"))}, f"{a.out}/lora_adapter.pt")
++    merge_lora(model.lm); log("[lora] adapter saved to", f"{a.out}/lora_adapter.pt", "and merged into the weights")
++
++
++LORA_TARGETS = "q_proj,k_proj,v_proj,o_proj,in_proj_qkv,in_proj_z,out_proj,gate_proj,up_proj,down_proj"
++
++
++# args a resumed run must share with the run that wrote the checkpoint (they fix the data order and the LR schedule)
++RESUME_KEYS = ["model", "data", "epochs", "lr", "wd", "warmup", "max_tokens", "accum", "max_ctx", "brier_w", "label_smooth",
++               "train_cap", "seed", "resample_every_epoch", "none_prob", "schema_first_prob", "max_options",
++               "lora_r", "lora_alpha", "lora_targets"]
++
++
++def dump_atomic(obj, path):
++    with open(path + ".tmp", "wb") as f:
++        pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
++    os.replace(path + ".tmp", path)
++
++
++def save_ckpt(out, model, opt, state):
++    """Resume checkpoint at an optimizer-step boundary (no half-accumulated grads): weights, AdamW state, schedule position,
++    data order.  Written to ckpt.tmp and renamed into place, so a save killed half-way leaves the previous checkpoint usable."""
++    tmp, dst, old = f"{out}/ckpt.tmp", f"{out}/ckpt", f"{out}/ckpt.old"
++    shutil.rmtree(tmp, ignore_errors=True); os.makedirs(tmp)
++    torch.save(model.state_dict(), f"{tmp}/model.pt"); torch.save(opt.state_dict(), f"{tmp}/optim.pt")
++    torch.save(state, f"{tmp}/state.pt")                                  # written last: its presence marks a complete checkpoint
++    if os.path.exists(dst):
++        shutil.rmtree(old, ignore_errors=True); os.rename(dst, old)
++    os.rename(tmp, dst); shutil.rmtree(old, ignore_errors=True)
++
++
++def find_ckpt(out):
++    return next((d for d in (f"{out}/ckpt", f"{out}/ckpt.old") if os.path.exists(f"{d}/state.pt")), None)
++
++
+ def main():
+     ap = argparse.ArgumentParser()
+     ap.add_argument("--model", default="Qwen/Qwen3.5-2B-Base")
+@@ -73,6 +158,13 @@ def main():
+     ap.add_argument("--none_prob", type=float, default=0.0, help="prob. of none-of-the-above augmentation per question")
+     ap.add_argument("--schema_first_prob", type=float, default=0.0, help="share of examples rendered questions-first (cacheable schema prefix)")
+     ap.add_argument("--max_options", type=int, default=10, help="options kept per question (10 = original protocol; 255 when the data set is already sub-sampled, e.g. tasks_v6_delta)")
++    ap.add_argument("--resume", action="store_true", help="continue from OUT/ckpt if there is one; exit at once if OUT is already trained")
++    ap.add_argument("--ckpt_every_min", type=float, default=0, help="write a resume checkpoint every N minutes (0 = off)")
++    ap.add_argument("--stop_at", type=float, default=0, help="unix time: checkpoint and exit once passed (job time limits)")
++    ap.add_argument("--stop_step", type=int, default=0, help="checkpoint and exit after this optimizer step (testing)")
++    ap.add_argument("--lora_r", type=int, default=0, help="LoRA rank; 0 = full fine-tune (the original recipe)")
++    ap.add_argument("--lora_alpha", type=float, default=0, help="LoRA scale numerator (default 2 * rank)")
++    ap.add_argument("--lora_targets", default=LORA_TARGETS, help="attribute names of the nn.Linear layers to adapt")
+     a = ap.parse_args()
+     os.makedirs(a.out, exist_ok=True)
+     logf = open(f"{a.out}/train.log", "a")
+@@ -80,19 +172,41 @@ def main():
+         msg = " ".join(str(x) for x in s); print(msg, flush=True); logf.write(msg + "\n"); logf.flush()
+     log("[args]", json.dumps(vars(a)))
+     torch.manual_seed(a.seed); rng = random.Random(a.seed)
++    ckpting = a.resume or a.ckpt_every_min or a.stop_at or a.stop_step
++    if a.resume and os.path.exists(f"{a.out}/COMPLETE"):
++        log("[resume] training already complete:", f"{a.out}/model"); return
++    ck = find_ckpt(a.out) if a.resume else None
++    st = torch.load(f"{ck}/state.pt", weights_only=False) if ck else None
++    if st:
++        bad = {k: (st["args"].get(k), getattr(a, k)) for k in RESUME_KEYS if st["args"].get(k) != getattr(a, k)}
++        if bad:
++            raise SystemExit(f"[resume] {ck} was written with different args (checkpoint, now): {bad}")
++    elif os.path.exists(f"{a.out}/COMPLETE"):
++        os.remove(f"{a.out}/COMPLETE")
+ 
+     train, evals = D.load_cache(a.data)
+     if a.train_cap:
+         rng.shuffle(train); train = train[:a.train_cap]
+     evals_small = {k: v[:a.eval_limit] for k, v in evals.items()}
+     model = DecisionModel(a.model).cuda()
++    if a.lora_r:
++        n = add_lora(model.lm, a.lora_r, a.lora_alpha or 2 * a.lora_r, set(a.lora_targets.split(",")))
++        ntr = sum(p.numel() for p in model.parameters() if p.requires_grad)
++        log(f"[lora] rank {a.lora_r} alpha {a.lora_alpha or 2 * a.lora_r}: {n} layers wrapped, {ntr / 1e6:.1f}M trainable parameters")
+     tok = model.tok
+-    log(f"[data] train examples {len(train)}; tokenizing...")
+-    t0 = time.time(); items = make_items(train, tok, rng, a.max_ctx, a.none_prob, a.max_options, a.schema_first_prob)
+-    ntok = sum(len(it["ids"]) for it in items); nq = sum(len(it["slots"]) for it in items)
+-    log(f"[data] {len(items)} items, {nq} questions, {ntok/1e6:.1f}M tokens, tokenized in {time.time()-t0:.0f}s")
++    if st:
++        items_file = st["items_file"]; t0 = time.time(); items = pickle.load(open(f"{a.out}/{items_file}", "rb"))
++        log(f"[data] {len(items)} items from {items_file} in {time.time()-t0:.0f}s")
++    else:
++        log(f"[data] train examples {len(train)}; tokenizing...")
++        t0 = time.time(); items = make_items(train, tok, rng, a.max_ctx, a.none_prob, a.max_options, a.schema_first_prob)
++        ntok = sum(len(it["ids"]) for it in items); nq = sum(len(it["slots"]) for it in items)
++        log(f"[data] {len(items)} items, {nq} questions, {ntok/1e6:.1f}M tokens, tokenized in {time.time()-t0:.0f}s")
++        items_file = "items_ep0.pkl"
++        if ckpting:
++            dump_atomic(items, f"{a.out}/{items_file}")
+ 
+-    opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.wd, betas=(0.9, 0.95))
++    opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=a.lr, weight_decay=a.wd, betas=(0.9, 0.95))
+     steps_per_epoch = math.ceil(len(batches_by_tokens(items, a.max_tokens, random.Random(0))) / a.accum)
+     total = int(steps_per_epoch * a.epochs)
+     log(f"[sched] {steps_per_epoch} optimizer steps/epoch, {total} total")
+@@ -101,17 +215,30 @@ def main():
+             return a.lr * s / a.warmup
+         return a.lr * 0.5 * (1 + math.cos(math.pi * min(1.0, (s - a.warmup) / max(1, total - a.warmup))))
+ 
+-    step, micro, ep = 0, 0, 0
++    step, micro, ep, bi0 = 0, 0, 0, 0
+     hist = []
++    if st:
++        assert st["total"] == total, (st["total"], total)
++        t0 = time.time()
++        model.load_state_dict(torch.load(f"{ck}/model.pt", map_location="cpu", mmap=True))
++        opt.load_state_dict(torch.load(f"{ck}/optim.pt", map_location="cpu", mmap=True))
++        step, micro, ep, bi0, hist = st["step"], st["micro"], st["ep"], st["bi"], st["hist"]
++        rng.setstate(st["ep_rng"]); torch.set_rng_state(st["torch_rng"]); torch.cuda.set_rng_state(st["cuda_rng"])
++        log(f"[resume] {ck}: step {step}/{total}, epoch {ep}, micro-batch {bi0} of the epoch; loaded in {time.time()-t0:.0f}s")
+     model.train()
+-    t0 = time.time(); ce_acc, n_acc = 0.0, 0; t_last = t0; tok_acc = 0
++    t0 = time.time(); ce_acc, n_acc = 0.0, 0; t_last = t0; tok_acc = 0; t_ckpt = t0; s_last = step
+     while step < total:
+-        if ep > 0 and a.resample_every_epoch:
++        if ep > 0 and a.resample_every_epoch and not (st and ep == st["ep"]):   # a resumed epoch keeps the items it started with
+             items = make_items(train, tok, rng, a.max_ctx, a.none_prob, a.max_options, a.schema_first_prob)
+-        for bidx in batches_by_tokens(items, a.max_tokens, rng):
++            items_file = f"items_ep{ep}.pkl"
++            if ckpting:
++                dump_atomic(items, f"{a.out}/{items_file}")
++        ep_rng = rng.getstate()                   # with the items, fixes this epoch's batch order: all a resume needs to replay it
++        batches = batches_by_tokens(items, a.max_tokens, rng)
++        for bi in range(bi0, len(batches)):
+             if step >= total:
+                 break
+-            b = collate([items[i] for i in bidx], tok.pad_token_id)
++            b = collate([items[i] for i in batches[bi]], tok.pad_token_id)
+             b = {k: (v.cuda() if torch.is_tensor(v) else v) for k, v in b.items()}
+             logits = model(b)
+             loss, ce = loss_fn(logits, b["golds"], b["nopts"], a.brier_w, a.label_smooth)
+@@ -124,18 +251,37 @@ def main():
+                 opt.step(); opt.zero_grad(set_to_none=True); step += 1
+                 if step % 20 == 0:
+                     el = time.time() - t0; now = time.time(); tps = tok_acc / (now - t_last)
+-                    log(f"[train] step {step}/{total} ep {ep} ce {ce_acc/n_acc:.4f} gn {gn:.2f} lr {lr_at(step):.2e} {el/60:.1f}min eta {(total-step)*(now-t_last)/20/60:.0f}min {tps:.0f}tok/s mem {torch.cuda.max_memory_allocated()/1e9:.0f}GB")
+-                    ce_acc, n_acc = 0.0, 0; t_last = now; tok_acc = 0
++                    log(f"[train] step {step}/{total} ep {ep} ce {ce_acc/n_acc:.4f} gn {gn:.2f} lr {lr_at(step):.2e} {el/60:.1f}min eta {(total-step)*(now-t_last)/max(1, step-s_last)/60:.0f}min {tps:.0f}tok/s mem {torch.cuda.max_memory_allocated()/1e9:.0f}GB")
++                    ce_acc, n_acc = 0.0, 0; t_last = now; tok_acc = 0; s_last = step
+                 if step == total:                       # save before the final eval so an eval crash cannot lose the run
++                    finish_lora(model, a, log)
+                     model.lm.save_pretrained(f"{a.out}/model"); tok.save_pretrained(f"{a.out}/model"); log("[save]", f"{a.out}/model")
++                    open(f"{a.out}/COMPLETE", "w").write(json.dumps(dict(step=step, total=total)) + "\n")
+                 if step % a.eval_every == 0 or step == total:
+                     res, _ = run_eval(model, evals_small, log=log); agg = aggregate(res)
+                     log(f"[eval-agg] step {step} " + json.dumps(agg))
+                     hist.append(dict(step=step, agg=agg, results=res)); json.dump(hist, open(f"{a.out}/hist.json", "w"), indent=1)
+                     model.train()
++                stop = (a.stop_step and step >= a.stop_step) or (a.stop_at and time.time() >= a.stop_at)
++                if step < total and (stop or (a.ckpt_every_min and time.time() - t_ckpt >= a.ckpt_every_min * 60)):
++                    ts = time.time()
++                    save_ckpt(a.out, model, opt, dict(step=step, micro=micro, ep=ep, bi=bi + 1, ep_rng=ep_rng, total=total,
++                                                      items_file=items_file, hist=hist, args=vars(a),
++                                                      torch_rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state()))
++                    t_ckpt = time.time(); log(f"[ckpt] step {step}/{total} -> {a.out}/ckpt in {t_ckpt-ts:.0f}s")
++                    if stop:
++                        log(f"[stop] at step {step}/{total}; rerun with --resume to continue"); return
++        bi0 = 0
+         ep += 1
++    finish_lora(model, a, log)
+     model.lm.save_pretrained(f"{a.out}/model"); tok.save_pretrained(f"{a.out}/model")
+     log("[done] saved", f"{a.out}/model")
++    if ckpting:                                   # the resume state is obsolete once the final model is written
++        for p in ("ckpt", "ckpt.old", "ckpt.tmp"):
++            shutil.rmtree(f"{a.out}/{p}", ignore_errors=True)
++        for f in os.listdir(a.out):
++            if f.startswith("items_ep") and f.endswith(".pkl"):
++                os.remove(f"{a.out}/{f}")
+ 
+ 
+ if __name__ == "__main__":
