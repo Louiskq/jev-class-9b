@@ -1,12 +1,12 @@
-# decider-9b: Mapika's decider recipe on Qwen3.5-9B + a hard-decision data and RL study
+# jev-class-9b: Mapika's decider recipe on Qwen3.5-9B + a hard-decision data and RL study
 
-This repo is an open **Jev-class decision model**: Qwen3.5-9B-Base tuned to take a piece of state and a bounded rubric and
-return a typed answer with a probability for every option, the task that [JevBench](https://benchmarkheaven.com/jev-models)
-measures. It trains a decider-style model on the base, then tries to improve it for the JevBench hard tier via
+This repo is an open **Jev-class decision model**: Qwen3.5-9B-Base tuned to take a piece of state and a bounded rubric and return a typed answer with a probability for every option.
+This is the task that [JevBench](https://benchmarkheaven.com/jev-models)
+measures. 
+
+It trains a decider-style model on the base, then tries to improve it for the JevBench hard tier via
 post-training: LoRA fine-tuning on teacher-written data, and calibrated RL on Breakout.
 
-> **Unofficial.** "Jev" is TypeSafe AI's decision model, and JevBench is Benchmark Heaven's benchmark. This project is
-> affiliated with neither. It copies the Jev-class task and interface, not Jev itself.
 
 > **Credit.** The supervised recipe, data mixture, serving code and evaluation suite are
 > [Mapika's decider](https://github.com/Mapika/decider), used under Apache 2.0. Base model: Qwen/Qwen3.5-9B-Base.
