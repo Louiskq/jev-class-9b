@@ -62,3 +62,36 @@ Held-out text set (1,061 q): SFT 0.698, A 0.785, B1 0.824, B2 0.839, B3 0.876.
 | RL plain PPO (forgetting check) | 0.685 | 0.110 | 0.842 / 0.790 | 0.91 | 0 / 0 | Breakout 34 |
 | RLCD-style v2 best (forgetting check) | 0.658 | 0.165 | 0.843 / 0.791 | 1.05 | 1 / 4, p = 0.38 | Breakout 54 |
 | combo = RLCD v2 + B1 delta (merge_adapter.py) | 0.712 | 0.134 | 0.841 / 0.797 | 1.65 | 10 / 7, p = 0.63 | Breakout 47, beliefs acc .84 ece .07 |
+
+## Round 4: noise floor, independent dev set, ablations (submitted 2026-10-05, `jobs/submit_round4.sh`)
+
+Written before any result of this round was seen.
+
+**Why.** Rounds 1-3 ranked runs on 111 JevBench hard items (s.e. about 4.4 points), read 10 times, one seed per run. That
+cannot separate B1, B3 and B5. This round measures the seed noise and uses a larger set that no earlier decision touched.
+
+**Dev sets** (`jobs/eval_dev.sh`, state-first, graph engine, accuracy over questions):
+- `new_domains` (primary): about 1,500 authored questions in four domains used nowhere before (public sector and
+  government services, energy and utilities, real estate and property management, telecommunications); same writer and
+  3-sample agreement filter as the training text, fresh seeds. The old text held-out set was partly used to pick round-2
+  data weights, so it is no longer clean.
+- `old_heldout` (1,061 q) and `public_heldout`: secondary, reported for continuity.
+
+**Arms** (all start from decider9b-sft, B1 settings: r64 / a128, lr 1e-4, 2 epochs, 65k tokens/step, 40 replay/task):
+| arm | change from B1 |
+|---|---|
+| B1_s1, B1_s2, B5_s1, B5_s2 | training seed 1 and 2 on the same cache (LoRA init and data order); seed 0 is the earlier run |
+| scale2k, scale5k | random 2,400 / 4,700 questions of the round-1 text |
+| scaleAll | all round-1 + round-2 text, unmined (22.9k questions) |
+| code5, code15 | B1 text + 470 / 1,650 restyled code questions (B2 had 4,000 records, about 30%) |
+| r16 | LoRA rank 16, alpha 32 |
+| lr5e5 | lr 5e-5 |
+
+**Decision rules.**
+1. The seed sd of B1 and B5 on `new_domains` is the noise floor. A change counts as real only if its paired difference
+   on `new_domains` has a 95% bootstrap CI excluding 0 **and** is larger than 2x that sd.
+2. The headline model is chosen on `new_domains` alone. JevBench is not run for any arm in this round. After the
+   analysis, JevBench is read once, for the single chosen configuration, and reported with the number of earlier reads.
+3. A recipe's score is its multi-seed mean, not its best seed.
+
+Analysis: `dev_compare.py --runs <hardgen>/runs/dev_eval --ref SFT --group B1=B1,B1_s1,B1_s2 --group B5=B5,B5_s1,B5_s2 --single A,B2,B3,B4,scale2k,scale5k,scaleAll,code5,code15,r16,lr5e5`

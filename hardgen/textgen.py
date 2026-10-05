@@ -27,6 +27,8 @@ TRAIN_DOMAINS = ["customer support for an online retailer", "IT helpdesk", "HR a
                  "software operations (incidents, deploys, logs)", "education administration", "travel and hospitality",
                  "manufacturing quality control"]
 HELDOUT_DOMAINS = ["healthcare administration", "logistics and shipping"]
+DEV_DOMAINS = ["public sector and government services", "energy and utilities", "real estate and property management",
+               "telecommunications"]   # in no training, mining or earlier held-out set: the independent dev set (--domains dev)
 DOC_TYPES = ["email thread", "support ticket with comments", "internal memo", "policy document with numbered clauses",
              "contract excerpt", "chat transcript", "incident report", "meeting notes", "submitted form",
              "table of records", "system or audit log", "invoice or account statement", "project status update"]
@@ -52,6 +54,7 @@ FAMILIES = {  # JevBench's published sealed-set categories; weights favour decid
 SEED_WEIGHTS = {"temporal": 1.0, "probability": 1.0, "ambiguous": 1.0}   # per sub-generator; --seed_weights overrides
 LENGTHS = [(0.55, "150 to 300 words"), (0.30, "300 to 900 words"), (0.15, "1,000 to 2,200 words")]
 FAMILY_WEIGHTS = {}                                                     # --family_weights overrides
+DOMAINS = []                                                            # --domains overrides the split's domain list
 CANNOT_WORDS = ("cannot be determined", "insufficient information", "not enough information", "cannot tell")
 
 
@@ -167,7 +170,7 @@ def agree(qwen, items, k=3):
 def spec(rng, split):
     fam = rng.choices(list(FAMILIES), [FAMILY_WEIGHTS.get(f, w) for f, (w, _) in FAMILIES.items()])[0]
     types = rng.choices(["choice", "noul", "score"], [60, 34, 6], k=3)
-    return dict(family=fam, brief=FAMILIES[fam][1], domain=rng.choice(TRAIN_DOMAINS if split == "train" else HELDOUT_DOMAINS),
+    return dict(family=fam, brief=FAMILIES[fam][1], domain=rng.choice(DOMAINS if DOMAINS else TRAIN_DOMAINS if split == "train" else HELDOUT_DOMAINS),
                 doc=rng.choice(DOC_TYPES), length=rng.choices([l for _, l in LENGTHS], [w for w, _ in LENGTHS])[0],
                 json_state=rng.random() < 0.32, types=types, n_opts=[rng.choice([3, 4, 4, 5, 5, 6]) for _ in types],
                 snake=rng.random() < 0.6)
@@ -351,7 +354,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--family_weights", default="", help="authored: family=weight,... (overrides FAMILIES weights)")
     ap.add_argument("--seed_weights", default="", help="seeded: temporal=w,probability=w,ambiguous=w (per sub-generator)")
+    ap.add_argument("--domains", default="", help="authored: 'dev' for DEV_DOMAINS, or domain;domain;... (overrides the split's list)")
     a = ap.parse_args()
+    DOMAINS[:] = DEV_DOMAINS if a.domains == "dev" else [d for d in a.domains.split(";") if d]
     parse_w = lambda t: {k: float(v) for k, v in (x.split("=") for x in t.split(",") if x)}
     FAMILY_WEIGHTS.update(parse_w(a.family_weights)); SEED_WEIGHTS.update(parse_w(a.seed_weights))
     print(f"[textgen] family weights {FAMILY_WEIGHTS or 'default'}; seed weights {SEED_WEIGHTS}")
