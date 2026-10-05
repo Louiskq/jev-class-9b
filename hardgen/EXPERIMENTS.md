@@ -95,3 +95,31 @@ cannot separate B1, B3 and B5. This round measures the seed noise and uses a lar
 3. A recipe's score is its multi-seed mean, not its best seed.
 
 Analysis: `dev_compare.py --runs <hardgen>/runs/dev_eval --ref SFT --group B1=B1,B1_s1,B1_s2 --group B5=B5,B5_s1,B5_s2 --single A,B2,B3,B4,scale2k,scale5k,scaleAll,code5,code15,r16,lr5e5`
+
+### Round 4 results (2026-10-05; full tables in `results/round4_dev_compare.md`)
+Dev set `new_domains`: 2,791 questions in 4 unseen domains (SFT 0.815). All 33 jobs completed; no JevBench read.
+
+| arm | acc | vs SFT (95% CI) | note |
+|---|---|---|---|
+| B1, 3 seeds (0.901 / 0.895 / 0.892) | 0.896 +- 0.005 | +0.081 (+0.069 .. +0.095) | seed sd = the noise floor |
+| B5, 3 seeds (0.900 / 0.898 / 0.894) | 0.897 +- 0.003 | +0.083 (+0.070 .. +0.094) | same as B1 on this set |
+| scale 2.4k / 4.7k / 9.4k (B1) / 22.9k | 0.874 / 0.884 / 0.896 / 0.909 | +0.059 / +0.069 / +0.081 / +0.094 | about +1.2 points per doubling, no plateau |
+| B3 (mined, 19.6k q) | 0.913 | +0.098 | vs scaleAll 0.909 (22.9k unmined): mining adds nothing beyond volume |
+| code 5% / 15% / B2 (30%) | 0.897 / 0.898 / 0.893 | +0.082 / +0.083 / +0.078 | no effect on this set |
+| A (code only) | 0.803 | -0.011 (-0.025 .. +0.002) | the only arm not above SFT |
+| r16, lr 5e-5 | 0.899, 0.903 | +0.084, +0.088 | recipe insensitive to both |
+| public held-out: B5 vs B1 | 0.814 vs 0.623 | | public data teaches public tasks (SFT 0.608); costs nothing on new_domains |
+
+Reading, against the rules above:
+1. Seed sd on `new_domains` is 0.003-0.005 (range 0.892-0.901 for B1), 0.006-0.011 on the old held-out set. Seed 0 of B1 was
+   the best of its three, so comparisons against "B1" as a single run flatter it.
+2. Text LoRA lifts the dev set by about 8 points, far above the noise. Code-only does not (A, -1.1). Adding 5 to 30% code to
+   the text neither helps nor hurts here.
+3. Only volume moves the dev score further. B3 (+0.011 over seed-0 B1, paired CI +0.002 .. +0.020) and scaleAll (+0.008,
+   CI -0.002 .. +0.018) are the only arms above the B1 seed spread. Each is a single seed.
+4. Chosen on `new_domains` alone: B3. Its JevBench read already exists (0.730, a tie with B1 0.739 and B5 0.748 at
+   n = 111), so this round adds no JevBench read; the count stays at 10.
+
+Limits: the dev set is written by the same teacher with the same filter as the training text, so it measures learning
+that distribution in new domains, not transfer to JevBench's authors. B3 and scaleAll differ by 0.004, so one seed each
+cannot rank them. JevBench hard remains unable to separate any of these (s.e. about 4.4 points).
