@@ -1,0 +1,16 @@
+{
+  "jevbench_hard": {
+    "n_items": 111,
+    "source": "hardgen/EXPERIMENTS.md (public hard tier, one read per checkpoint)",
+    "acc": {"SFT": 0.685, "A (code only)": 0.568, "B1 (text)": 0.739, "B2 (text + code)": 0.712,
+            "B3 (text r1+r2)": 0.730, "B4 (balanced r2)": 0.703, "B5 (text + public)": 0.748,
+            "RL plain PPO": 0.685, "RLCD v2": 0.658, "RLCD v2 + B1 delta": 0.712}
+  },
+  "breakout": {
+    "source": "10 greedy / 16 sampled games, fixed belief labels",
+    "SFT":                {"greedy": 22, "sampled": 6.00, "belief_ece": 0.42},
+    "Plain PPO":          {"greedy": 34, "sampled": 6.25, "belief_ece": 0.12},
+    "RLCD v2 (best)":     {"greedy": 54, "sampled": 7.12, "belief_ece": 0.04},
+    "RLCD v2 + B1 delta": {"greedy": 47, "sampled": 6.88, "belief_ece": 0.07}
+  }
+}
