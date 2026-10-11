@@ -9,6 +9,7 @@
 set -e
 export HF_HOME=/projects/u6xe/louisk/hf PYTHONUNBUFFERED=1
 unset HF_HUB_OFFLINE                       # the training jobs set it; uploading needs the network
+export HF_HUB_DISABLE_XET=1                # the Xet upload path kept dropping from compute nodes (cas-server.xethub.hf.co); use plain LFS
 D=/projects/u6xe/louisk
 case "$1" in
   sft) M=$D/decider/runs/decider9b_full/model;  REPO=Louiskq/jev-class-9b-sft; CARD=model_card_sft.md ;;
