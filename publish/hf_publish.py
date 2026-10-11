@@ -5,7 +5,7 @@
 Without --upload it only prints what would be sent. Repos are always created private; making one public is a manual
 step in the HF settings. Training state, adapters and pickles are never uploaded.
 """
-import argparse, json, os, sys
+import argparse, json, os, sys, time
 from huggingface_hub import HfApi
 
 IGNORE = ["ckpt/*", "*.pt", "*.pkl", "*.bin", "optim*", "state*", "items_*", "eval/*", "__pycache__/*", "*.log", "COMPLETE"]
@@ -38,7 +38,15 @@ if not a.upload:
 api = HfApi()
 print("logged in as", api.whoami()["name"])
 api.create_repo(a.repo_id, repo_type="model", private=True, exist_ok=True)
-api.upload_folder(repo_id=a.repo_id, folder_path=a.model_dir, ignore_patterns=IGNORE, commit_message="Upload model")
+for attempt in range(1, 6):          # Xet connections to HF's storage drop on long uploads; a retry resumes with dedup
+    try:
+        api.upload_folder(repo_id=a.repo_id, folder_path=a.model_dir, ignore_patterns=IGNORE, commit_message="Upload model")
+        break
+    except Exception as e:
+        print(f"upload attempt {attempt} failed: {type(e).__name__}: {str(e)[:200]}", flush=True)
+        if attempt == 5:
+            raise
+        time.sleep(60)
 api.upload_file(repo_id=a.repo_id, path_or_fileobj=card.encode(), path_in_repo="README.md", commit_message="Add model card")
 try:
     api.upload_file(repo_id=a.repo_id, path_or_fileobj=open(os.path.join(os.path.dirname(a.card), "..", "LICENSE"), "rb"),
