@@ -25,9 +25,8 @@ Code, patches, job scripts and the full experiment log: https://github.com/Louis
 ## Training
 
 - Data: decider's mixture, built with decider's own scripts: 1,555,599 examples, 464.6M tokens.
-- One epoch, 16,982 optimizer steps, about 23 h on one GH200 (Isambard-AI). No NaNs or restarts of note (the run
-  was resumed once from a checkpoint; the resumed run matched an uninterrupted one in a test).
-- Local changes to decider's `train.py`: checkpoint/resume support. See the repo's `patches/`.
+- One epoch, 16,982 optimizer steps, about 23 h on one GH200 (Isambard-AI).
+- Local change to decider's `train.py`: checkpoint/resume support (see the repo's `patches/`).
 - No JevBench item was used for training.
 
 ## Results
@@ -51,14 +50,11 @@ On hard (111 items, standard error about 4.4 points) this is a tie with decider-
 
 `decider_config.json` holds the fitted temperature (1.05); apply it. Serving uses decider's `decider.serve`
 (`DECIDER_MODEL=<this dir> uvicorn decider.serve:app`), tested with decider plus the patches in the repo above.
-The checkpoint is a standard Qwen3.5 (hybrid linear-attention) model, but it is trained for decider's input format,
-not for chat.
 
 ## Limitations
 
 - Weakest regression probes: very long option lists and JSON-heavy states (json_k64 0.61, json_xl 0.63, json_long 0.70).
 - Game tasks: teacher level on pong, breakout and cliffwalking; fails minigrid_empty and frozenlake.
-- Hard JevBench items remain the weak spot (0.685).
 
 ## Credits
 
