@@ -2,12 +2,12 @@
 license: apache-2.0
 base_model: Louiskq/jev-class-9b-sft
 library_name: transformers
+inference: false
 tags:
   - decider
   - decision-making
   - calibration
   - jevbench
-  - lora
 ---
 
 # jev-class-9b
@@ -16,6 +16,8 @@ tags:
 plus a LoRA (merged into the weights) trained on teacher-written decision questions aimed at JevBench's hard
 tier. This is an unofficial community model, not affiliated with JevBench or decider.
 Code, data pipeline and the full experiment log: https://github.com/Louiskq/jev-class-9b.
+
+**Not a chat model.** The architecture is a standard Qwen3.5 causal LM, so the Hub labels it "text-generation", but it is trained to read a decider-format state and rubric and return a probability for each option. Prompting it like a chat model will not give meaningful results; use decider's serving code.
 
 ## What it is and what the evidence says
 
