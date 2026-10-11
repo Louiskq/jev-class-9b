@@ -10,7 +10,7 @@ tags:
   - jevbench
 ---
 
-# jev-class-9b
+# jev-class-9b-sft-lora
 
 [`jev-class-9b-sft`](https://huggingface.co/Louiskq/jev-class-9b-sft) (Mapika's decider recipe on Qwen3.5-9B-Base)
 plus a LoRA (merged into the weights) trained on teacher-written decision questions aimed at JevBench's hard
