@@ -12,54 +12,39 @@ tags:
 
 # jev-class-9b-sft-lora
 
-[`jev-class-9b-sft`](https://huggingface.co/Louiskq/jev-class-9b-sft) (Mapika's decider recipe on Qwen3.5-9B-Base)
-plus a LoRA (merged into the weights) trained on teacher-written decision questions aimed at JevBench's hard
-tier. This is an unofficial community model, not affiliated with JevBench or decider.
-Code, data pipeline and the full experiment log: https://github.com/Louiskq/jev-class-9b.
+This is [jev-class-9b-sft](https://huggingface.co/Louiskq/jev-class-9b-sft) with a LoRA merged into the weights. The LoRA was trained on decision questions written by Qwen3.8-27B, aimed at the hard tier of JevBench. It is an unofficial community model and has no connection to JevBench or decider. Code and experiment log: https://github.com/Louiskq/jev-class-9b
 
-**Not a chat model.** The architecture is a standard Qwen3.5 causal LM, so the Hub labels it "text-generation", but it is trained to read a decider-format state and rubric and return a probability for each option. Prompting it like a chat model will not give meaningful results; use decider's serving code.
+It is not a chat model. The Hub lists it as text-generation because the architecture is a Qwen3.5 causal LM, but it reads a state and a rubric in decider's format and returns a probability for each option. Prompting it like a chat model won't give you anything useful. Use decider's serving code.
 
-## Evidence
+## Does it help?
 
-Chosen on a dev set that no earlier decision used, not on JevBench.
+On 2,791 questions from four domains that were not in training, accuracy goes from 0.815 (the SFT model) to 0.913. This is what the model was picked on.
 
-- **Clear gain:** +9.8 points on 2,791 questions in four unseen domains (0.815 -> 0.913).
-- **Not shown:** a gain on JevBench hard. 0.730 against 0.685 for the SFT model is 11 questions fixed and 6 broken
-  out of 111, which is not significant (sign test p = 0.33).
-- **Not harmed:** regression accuracy is within 0.003 of the SFT model.
+On JevBench hard it goes from 0.685 to 0.730, but that is 11 questions fixed and 6 broken out of 111 (sign test p = 0.33), which is not enough to call it better there. Accuracy on decider's regression suite stayed within 0.003 of the SFT model.
 
-## Training
-
-- Start: jev-class-9b-sft. LoRA rank 64, alpha 128 on all attention and MLP projections, lr 1e-4, cosine,
-  2 epochs, 65,536 tokens per step, merged into the weights.
-- Data: 19,612 questions written or reworded by the stock Qwen/Qwen3.8-27B teacher (Apache 2.0), kept only if the
-  answer is fixed by code or three independent answers agree, plus 40 replay examples per task from decider's mixture.
-- Spec sampling used only JevBench's aggregate format statistics (lengths, option counts, question types). No JevBench
-  item was used for training or for choosing training data.
-
-## Results
-
-| | JevBench hard | hard ECE | regression in-task / held-out |
+| | JevBench hard | hard ECE | regression, in-task / held-out |
 |---|---|---|---|
 | jev-class-9b-sft | 0.685 | 0.113 | 0.843 / 0.793 |
-| **jev-class-9b-sft-lora** | 0.730 | 0.165 | 0.841 / 0.792 |
+| jev-class-9b-sft-lora | 0.730 | 0.165 | 0.841 / 0.792 |
 
 JevBench original: 0.958.
 
+## Training
+
+The LoRA has rank 64 and alpha 128, covers all attention and MLP projections, and was trained for 2 epochs at lr 1e-4 with 65,536 tokens per step, then merged.
+
+The data is 19,612 questions written or reworded by Qwen/Qwen3.8-27B (Apache 2.0). A question was kept only if its answer was fixed by code or three independent answers from the teacher agreed. 40 examples per task from decider's mixture were mixed in as replay.
+
+The question specs were sampled using only JevBench's aggregate format statistics (lengths, number of options, question types). No JevBench item was used for training or for choosing training data.
+
 ## Use
 
-**Apply the temperature in `decider_config.json` (about 1.65).** The model is over-confident at T = 1 and well
-calibrated on the regression sets after fitting. Even so, its calibration on JevBench hard is a little worse than the
-SFT model's (ECE 0.165 against 0.113). Serving is the same as for the SFT model (`decider.serve`, see its card).
+Apply the temperature in `decider_config.json` (about 1.65). The model is over-confident at T = 1 and well calibrated on the regression sets once it is fitted. On JevBench hard its calibration is still a bit worse than the SFT model's (ECE 0.165 against 0.113). Serving works the same as for the SFT model, with `decider.serve`.
 
 ## Limitations
 
-- The dev set is written by the same teacher as the training data, so it measures learning that distribution in new
-  domains, not transfer to other authors' styles.
-- The JevBench hard gain over the SFT model is not significant (n = 111).
-- Weak spots of the SFT model carry over (see its card).
+The dev set is written by the same teacher as the training data, so the +9.8 points show the model learned that kind of question in new domains. They don't show it transfers to other authors' styles. The JevBench hard gain is within noise. The weak spots of the SFT model carry over; they are listed on its card.
 
 ## Credits
 
-Recipe, data mixture, serving and evaluation: [Mapika's decider](https://github.com/Mapika/decider) (Apache 2.0).
-Base: Qwen/Qwen3.5-9B-Base. Text teacher: Qwen/Qwen3.8-27B. Licence: Apache 2.0.
+Recipe, data mixture, serving code and evaluation suite are from [Mapika's decider](https://github.com/Mapika/decider) (Apache 2.0). Base model: Qwen/Qwen3.5-9B-Base. Question writer: Qwen/Qwen3.8-27B. This model is Apache 2.0.
